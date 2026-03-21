@@ -1,47 +1,50 @@
 ---
 name: remo-code:configure
-description: Configure the Remo Code hub connection for this channel
+description: Configure the Remo Code hub connection with your hub URL and API key
 arguments:
-  - name: hub_url
-    description: The hub URL (e.g., https://remo-code.com or http://localhost:3040)
+  - name: api_key
+    description: "Your API key (starts with remokey_). Generate one at Settings > API Key in your Remo Code web UI."
     required: true
-  - name: token
-    description: The session token (starts with remo_)
+  - name: hub_url
+    description: "Your Remo Code hub URL (e.g., https://demo.remo-code.com or your self-hosted URL)"
     required: true
 ---
 
 # /remo-code:configure
 
-Save the hub URL and session token so the channel plugin can connect.
+Save the hub URL and API key so the channel plugin can auto-register sessions. Each project directory gets its own session automatically.
 
 ## Steps
 
 1. Create the config directory at `~/.claude/channels/remo-code/` if it doesn't exist
-2. Write the `.env` file with `HUB_URL` and `HUB_TOKEN`
-3. Set file permissions to owner-only (chmod 600)
-4. Tell the user to restart Claude Code with `--channels` to activate
+2. Load existing `state.json` or create a new one
+3. Set `api_key` to `{{api_key}}` and `hub_url` to `{{hub_url}}`
+4. Verify the key works by calling `GET {{hub_url}}/api/plugin/verify` with header `Authorization: Bearer {{api_key}}`
+5. If verification succeeds (200), save `state.json` with permissions 600
+6. If verification fails (401), tell the user the key is invalid
 
-## Template
+## state.json format
 
-Write this to `~/.claude/channels/remo-code/.env`:
+Write this to `~/.claude/channels/remo-code/state.json`:
 
-```
-HUB_URL={{hub_url}}
-HUB_TOKEN={{token}}
-SESSION_ID={{default to basename of current working directory}}
+```json
+{
+  "hub_url": "{{hub_url}}",
+  "api_key": "{{api_key}}",
+  "sessions": {}
+}
 ```
 
 After writing, set permissions:
 ```bash
-chmod 600 ~/.claude/channels/remo-code/.env
+chmod 600 ~/.claude/channels/remo-code/state.json
 ```
 
-Then tell the user:
-> Configuration saved. Restart Claude Code with the channel enabled:
-> ```
-> claude --channels plugin:remo-code@claude-plugins-official
-> ```
-> If the plugin isn't on the approved allowlist yet, use:
+## On success
+
+Tell the user:
+> Configuration saved and verified. Restart Claude Code with the channel enabled:
 > ```
 > claude --dangerously-load-development-channels plugin:remo-code@claude-plugins-official
 > ```
+> Sessions will be auto-created for each project directory — no manual token setup needed.
