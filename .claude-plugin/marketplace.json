@@ -1,0 +1,16 @@
+{
+  "name": "remo-code-channel",
+  "owner": {
+    "name": "Remo Code"
+  },
+  "metadata": {
+    "description": "Remo Code channel plugin for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "remo-code",
+      "source": ".",
+      "description": "Remote access to your Claude Code sessions from any browser or phone"
+    }
+  ]
+}
