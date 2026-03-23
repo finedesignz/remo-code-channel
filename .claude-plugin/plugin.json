@@ -1,12 +1,13 @@
 {
   "name": "remo-code",
-  "description": "Remo Code channel for Claude Code — bridges your Claude Code session to the Remo Code hub for remote chat access via web, phone, or any browser.",
-  "version": "0.0.1",
+  "description": "Chat with your Claude Code sessions remotely from any browser via Remo Code",
+  "version": "0.1.0",
   "author": {
-    "name": "Remo Code"
+    "name": "Remo Code",
+    "url": "https://remo-code.com"
   },
   "homepage": "https://remo-code.com",
   "repository": "https://github.com/finedesignz/remo-code-channel",
   "license": "Apache-2.0",
-  "keywords": ["remo-code", "remote", "channel", "mcp", "chat", "web"]
+  "keywords": ["remo-code", "remote", "channel", "chat", "web", "mobile"]
 }

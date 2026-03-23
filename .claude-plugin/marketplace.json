@@ -1,16 +1,18 @@
 {
   "name": "remo-code-channel",
   "owner": {
-    "name": "Remo Code"
+    "name": "Remo Code",
+    "url": "https://remo-code.com"
   },
   "metadata": {
-    "description": "Remo Code channel plugin for Claude Code"
+    "description": "Remo Code channel plugin marketplace — chat with Claude Code from any browser"
   },
   "plugins": [
     {
       "name": "remo-code",
       "source": ".",
-      "description": "Remote access to your Claude Code sessions from any browser or phone"
+      "description": "Remote access to your Claude Code sessions from any browser or phone",
+      "version": "0.1.0"
     }
   ]
 }

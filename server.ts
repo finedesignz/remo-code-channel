@@ -2,7 +2,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { readFileSync, writeFileSync, chmodSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 
@@ -43,21 +43,16 @@ function loadState(): PluginState | null {
 
   // Fall back to .env for backward compatibility
   try {
-    chmodSync(ENV_FILE, 0o600)
     const env: Record<string, string> = {}
     for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
       const m = line.match(/^(\w+)=(.*)$/)
       if (m) env[m[1]] = m[2]
     }
     if (env.HUB_URL && env.HUB_TOKEN) {
-      const projectDir = process.cwd()
-      const sessionId = env.SESSION_ID || basename(projectDir)
       return {
         hub_url: env.HUB_URL,
-        api_key: '', // no API key in legacy mode
-        sessions: {
-          [projectDir]: { session_id: sessionId, token: env.HUB_TOKEN, name: basename(projectDir) },
-        },
+        api_key: '',
+        sessions: {},
       }
     }
   } catch {}
@@ -68,48 +63,47 @@ function loadState(): PluginState | null {
 function saveState(state: PluginState) {
   mkdirSync(STATE_DIR, { recursive: true })
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
-  try { chmodSync(STATE_FILE, 0o600) } catch {}
+  try { require('fs').chmodSync(STATE_FILE, 0o600) } catch {}
 }
 
 // -- Load config --
+// IMPORTANT: Do NOT process.exit() on config failure — that causes Claude Code
+// to restart the process in a tight loop, spawning dozens of terminals.
+// Instead, log the error and let the MCP server run without a hub connection.
 
 const state = loadState()
 if (!state) {
   process.stderr.write(
     'remo-code: No configuration found.\n' +
-    'Run /remo-code:configure to set up your hub URL and API key.\n'
+    'Generate an API key at https://app.remo-code.com, then run:\n' +
+    '  /remo-code:configure <api_key>\n'
   )
-  process.exit(1)
 }
 
-// Determine the actual project directory.
-// The plugin runs with --cwd pointing to the channel/ subdirectory,
-// so process.cwd() is wrong. We walk up to find the git root, or
-// use CLAUDE_PROJECT_DIR if set by Claude Code.
-function findProjectDir(): string {
-  // Check env var first (future Claude Code versions may set this)
+// -- Determine project directory --
+// When installed as a plugin, process.cwd() is CLAUDE_PLUGIN_ROOT (the plugin
+// cache dir), NOT the user's project. Claude Code does not expose the user's
+// working directory to channel plugins via env vars.
+
+function getProjectDir(): string {
   if (process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR
 
-  // Walk up from cwd looking for .git (project root indicator)
-  let dir = process.cwd()
-  const { root } = require('path').parse(dir)
+  const cwd = process.cwd()
+  const { resolve, parse } = require('path')
+  let dir = cwd
+  const { root } = parse(dir)
   while (dir !== root) {
     if (existsSync(join(dir, '.git'))) return dir
-    dir = join(dir, '..')
-    dir = require('path').resolve(dir)
+    dir = resolve(join(dir, '..'))
   }
 
-  // Fallback: if cwd basename is a known plugin subdir, go up one level
-  const cwd = process.cwd()
-  const base = basename(cwd)
-  if (base === 'channel' || base === 'plugin') {
-    return require('path').resolve(join(cwd, '..'))
-  }
-
-  return cwd
+  // We're in the plugin cache — use ephemeral session ID
+  const sessionId = `session-${crypto.randomUUID().slice(0, 8)}`
+  process.stderr.write(`remo-code: no project detected, using ephemeral session: ${sessionId}\n`)
+  return sessionId
 }
 
-const PROJECT_DIR = findProjectDir()
+const PROJECT_DIR = getProjectDir()
 
 // -- Auto-register session via API key --
 
@@ -119,10 +113,10 @@ async function ensureSession(): Promise<SessionCache> {
 
   if (!state!.api_key) {
     process.stderr.write('remo-code: no API key configured, cannot auto-register\n')
-    process.exit(1)
+    throw new Error('no API key')
   }
 
-  process.stderr.write('remo-code: auto-registering session...\n')
+  process.stderr.write(`remo-code: registering session for "${PROJECT_DIR}"...\n`)
 
   const res = await fetch(`${state!.hub_url}/api/plugin/sessions`, {
     method: 'POST',
@@ -136,9 +130,10 @@ async function ensureSession(): Promise<SessionCache> {
   if (res.status === 401) {
     process.stderr.write(
       'remo-code: API key is invalid or revoked.\n' +
-      'Run /remo-code:configure to set a new API key.\n'
+      'Generate a new key at https://app.remo-code.com, then run:\n' +
+      '  /remo-code:configure <new_api_key>\n'
     )
-    process.exit(1)
+    throw new Error('API key invalid')
   }
 
   if (!res.ok) {
@@ -159,7 +154,6 @@ async function ensureSession(): Promise<SessionCache> {
 async function reRegister(): Promise<SessionCache | null> {
   if (!state!.api_key) return null
 
-  // Clear cached token for this project
   delete state!.sessions[PROJECT_DIR]
   saveState(state!)
 
@@ -174,7 +168,7 @@ async function reRegister(): Promise<SessionCache | null> {
 // -- MCP Server --
 
 const mcp = new Server(
-  { name: 'remo-code', version: '0.0.1' },
+  { name: 'remo-code', version: '0.1.0' },
   {
     capabilities: {
       experimental: { 'claude/channel': {} },
@@ -185,16 +179,15 @@ const mcp = new Server(
       '',
       'Messages from the web arrive as <channel source="remo-code" chat_id="..." message_id="..." user="..." ts="...">.',
       'Reply with the reply tool — pass chat_id back.',
-      'Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
+      'Use reply_to (set to a message_id) only when replying to an earlier message; omit reply_to for normal responses.',
       '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments.',
       'Use react to add emoji reactions, and edit_message to update a message you previously sent.',
       '',
       'IMPORTANT: The user cannot see your terminal output. When working on a task that takes more than a few seconds:',
-      '1. Send a brief reply immediately acknowledging what you will do (e.g. "Looking into that..." or "Let me check the logs.")',
-      '2. As you work, send progress updates via reply every 30-60 seconds for longer tasks (e.g. "Found the issue in auth.ts, fixing now..." or "Tests passing, deploying...")',
+      '1. Send a brief reply immediately acknowledging what you will do',
+      '2. As you work, send progress updates via reply every 30-60 seconds for longer tasks',
       '3. Send a final reply with the result or answer.',
-      'This keeps the user informed since they cannot see your work in progress.',
     ].join('\n'),
   },
 )
@@ -285,8 +278,33 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 let ws: WebSocket | null = null
 let currentSession: SessionCache | null = null
 const RECONNECT_DELAY_MS = 5_000
+let lastPong = 0
+let healthInterval: ReturnType<typeof setInterval> | null = null
+
+const HEALTH_CHECK_INTERVAL_MS = 60_000
+const HEALTH_CHECK_TIMEOUT_MS = 90_000
+
+function startHealthCheck() {
+  stopHealthCheck()
+  healthInterval = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    if (Date.now() - lastPong > HEALTH_CHECK_TIMEOUT_MS) {
+      process.stderr.write('remo-code: no heartbeat received, reconnecting...\n')
+      ws.close()
+    }
+  }, HEALTH_CHECK_INTERVAL_MS)
+}
+
+function stopHealthCheck() {
+  if (healthInterval) {
+    clearInterval(healthInterval)
+    healthInterval = null
+  }
+}
 
 async function connectToHub() {
+  if (!state) return // no config — stay alive but disconnected
+
   if (!currentSession) {
     try {
       currentSession = await ensureSession()
@@ -297,13 +315,14 @@ async function connectToHub() {
     }
   }
 
-  const wsUrl = state!.hub_url.replace(/^http/, 'ws') + '/ws/channel'
+  const wsUrl = state.hub_url.replace(/^http/, 'ws') + '/ws/channel'
   process.stderr.write(`remo-code: connecting to ${wsUrl}\n`)
 
   ws = new WebSocket(wsUrl)
 
   ws.onopen = () => {
     process.stderr.write('remo-code: connected, authenticating...\n')
+    lastPong = Date.now()
     ws!.send(JSON.stringify({
       type: 'auth',
       session_id: currentSession!.session_id,
@@ -318,11 +337,11 @@ async function connectToHub() {
     if (msg.type === 'auth_ok') {
       process.stderr.write(`remo-code: authenticated as "${currentSession!.name}"\n`)
       sendToHub({ type: 'status', status: 'idle' })
+      startHealthCheck()
     }
 
     if (msg.type === 'auth_error') {
       process.stderr.write(`remo-code: auth failed — ${msg.error}\n`)
-      // Don't close here — onclose will handle re-registration
     }
 
     if (msg.type === 'user_message') {
@@ -341,15 +360,16 @@ async function connectToHub() {
     }
 
     if (msg.type === 'ping') {
+      lastPong = Date.now()
       ws?.send(JSON.stringify({ type: 'pong' }))
     }
   }
 
   ws.onclose = (event) => {
     ws = null
+    stopHealthCheck()
 
     if (event.code === 4001 || event.code === 4004) {
-      // Auth failed or token rotated — re-register via API key
       process.stderr.write(`remo-code: token invalid (${event.code}), re-registering...\n`)
       currentSession = null
       setTimeout(async () => {
@@ -363,7 +383,6 @@ async function connectToHub() {
         }
       }, 1_000)
     } else {
-      // Network issue — simple reconnect with cached token
       process.stderr.write('remo-code: disconnected, reconnecting in 5s...\n')
       setTimeout(connectToHub, RECONNECT_DELAY_MS)
     }
